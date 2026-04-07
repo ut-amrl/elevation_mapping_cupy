@@ -23,6 +23,7 @@
     sensor_noise_factor: 0.01
     mahalanobis_thresh: 10.0           # Accept most points
     min_valid_distance: 0.0            # Accept all distances
+    max_valid_distance: 100.0           # Accept all distances
     max_height_range: 100.0            # Accept all heights
 
     # Disable features that complicate testing

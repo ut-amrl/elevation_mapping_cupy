@@ -40,7 +40,8 @@ from elevation_mapping_cupy.traversability_polygon import (
 import cupy as cp
 
 xp = cp
-pool = cp.cuda.MemoryPool(cp.cuda.malloc_managed)
+# pool = cp.cuda.MemoryPool(cp.cuda.malloc_managed)  # unified memory — causes page-table overhead even on Jetson
+pool = cp.cuda.MemoryPool()  # regular device memory — faster for GPU-only workloads
 cp.cuda.set_allocator(pool.malloc)
 
 
@@ -152,6 +153,9 @@ class ElevationMap:
         self.plugin_manager.load_plugin_settings(param.plugin_config_file)
 
         self.map_initializer = MapInitializer(self.initial_variance, param.initialized_variance, xp=cp, method="points")
+
+        # Reusable CUDA event for ordering async D2H copies after GPU computation
+        self._d2h_event = cp.cuda.Event(disable_timing=True)
 
     def clear(self):
         """Reset all the layers of the elevation & the semantic map."""
@@ -294,6 +298,7 @@ class ElevationMap:
             self.param.max_ray_length,
             self.param.cleanup_step,
             self.param.min_valid_distance,
+            self.param.max_valid_distance,
             self.param.max_height_range,
             self.param.cleanup_cos_thresh,
             self.param.ramped_height_range_a,
@@ -311,6 +316,7 @@ class ElevationMap:
             self.param.drift_compensation_variance_inlier,
             self.param.traversability_inlier,
             self.param.min_valid_distance,
+            self.param.max_valid_distance,
             self.param.max_height_range,
             self.param.ramped_height_range_a,
             self.param.ramped_height_range_b,
@@ -476,12 +482,6 @@ class ElevationMap:
             None:
         """
         raw_points = cp.asarray(raw_points, dtype=self.data_type)
-        
-        # Check for the sanity of the raw points
-        min_points = cp.min(raw_points, axis=0)
-        max_points = cp.max(raw_points, axis=0)
-        mean_points = cp.mean(raw_points, axis=0)
-                
         additional_channels = channels[3:]
         raw_points = raw_points[~cp.isnan(raw_points[:, :3]).any(axis=1)]
         self.update_map_with_kernel(
@@ -722,20 +722,22 @@ class ElevationMap:
         else:
             return False
 
-    def get_map_with_name_ref(self, name, data):
+    def get_map_with_name_ref(self, name, data, stream=None):
         """Load a layer according to the name input to the data input.
 
         Args:
             name (str): Name of the layer.
             data (numpy.ndarray): Data structure that contains layer.
+            stream (cupy.cuda.Stream, optional): If provided, the D2H copy is
+                enqueued on this stream (non-blocking).  The caller must call
+                ``stream.synchronize()`` before reading *data*.  When *None*,
+                the copy is synchronous (backward-compatible default).
 
         """
-        use_stream = True
         xp = cp
         with self.map_lock:
             if name == "elevation":
                 m = self.get_elevation()
-                use_stream = False
             elif name == "variance":
                 m = self.get_variance()
             elif name == "is_valid":
@@ -767,27 +769,12 @@ class ElevationMap:
                 m = self.process_map_for_publish(m, fill_nan=p.fill_nan, add_z=p.is_height_layer, xp=xp)
             else:
                 raise KeyError(f"Layer '{name}' is not in the map.")
-        # Transform to align elevation_mapping_cupy with grid_map coordinate convention.
-        #
-        # elevation_mapping_cupy uses Row=Y, Col=X (see kernels/custom_kernels.py:35)
-        # grid_map uses Row→-X, Col→-Y (see grid_map_core/src/GridMapMath.cpp:64-67
-        #   transformBufferOrderToMapFrame returns {-index[0], -index[1]})
-        #
-        # Required transformation:
-        #   1. Transpose: swap axes so Row=X, Col=Y (matching grid_map's axis assignment)
-        #   2. Flip axis 0: so increasing row → decreasing X (matching grid_map's -X)
-        #   3. Flip axis 1: so increasing col → decreasing Y (matching grid_map's -Y)
-        #
-        # This is equivalent to: rot90(m.T, k=2) or flip(flip(m.T, 0), 1)
-        #
-        # Old 180° rotation (incorrect - missing transpose, caused 90° CCW error in RViz):
-        # m = xp.flip(m, 0)
-        # m = xp.flip(m, 1)
         m = self._transform_to_grid_map_coordinate_convention(m)
-        if use_stream:
-            stream = cp.cuda.Stream(non_blocking=False)
-        else:
-            stream = None
+        if stream is not None:
+            # Ensure all default-stream GPU work (computation + transform)
+            # finishes before the async copy starts on the caller's stream.
+            self._d2h_event.record()          # records on current (default) stream
+            stream.wait_event(self._d2h_event) # copy stream waits for computation
         self.copy_to_cpu(m, data, stream=stream)
 
     def _transform_to_grid_map_coordinate_convention(self, m):

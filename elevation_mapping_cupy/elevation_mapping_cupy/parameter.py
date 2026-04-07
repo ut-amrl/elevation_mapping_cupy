@@ -68,6 +68,8 @@ class Parameter(Serializable):
                             (Default: ``0.5``)
         min_valid_distance: Points with shorter distance will be filtered out.  
                             (Default: ``0.3``)
+        max_valid_distance: Points with longer distance will be filtered out.  
+                            (Default: ``100.0``)
         max_height_range: Points higher than this value from sensor will be filtered out to disable ceiling.  
                            (Default: ``1.0``)
         ramped_height_range_a: If z > max(d - ramped_height_range_b, 0) * ramped_height_range_a + ramped_height_range_c, reject.  
@@ -179,6 +181,7 @@ class Parameter(Serializable):
     cleanup_step: float = 0.01  # substitute this value from validity layer at visibility cleanup.
     cleanup_cos_thresh: float = 0.5  # substitute this value from validity layer at visibility cleanup.
     min_valid_distance: float = 0.3  # points with shorter distance will be filtered out.
+    max_valid_distance: float = 100.0  # points with longer distance will be filtered out.
     max_height_range: float = 1.0  # points higher than this value from sensor will be filtered out to disable ceiling.
     ramped_height_range_a: float = 0.3  # if z > max(d - ramped_height_range_b, 0) * ramped_height_range_a + ramped_height_range_c, reject.
     ramped_height_range_b: float = 1.0  # if z > max(d - ramped_height_range_b, 0) * ramped_height_range_a + ramped_height_range_c, reject.

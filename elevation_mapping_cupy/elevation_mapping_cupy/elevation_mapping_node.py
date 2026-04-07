@@ -26,8 +26,10 @@ from geometry_msgs.msg import Vector3, Quaternion
 from std_msgs.msg import Float32MultiArray
 from std_msgs.msg import MultiArrayLayout as MAL
 from std_msgs.msg import MultiArrayDimension as MAD
+import cupy as cp
 import rosbag2_py
 from elevation_mapping_cupy import ElevationMap, Parameter
+from elevation_mapping_cupy.kernels.pointcloud_filters import azimuth_filter_gpu, voxel_downsample_gpu
 from elevation_mapping_cupy.elevation_mapping import GridGeometry
 from elevation_mapping_cupy.gridmap_utils import encode_layer_to_multiarray, decode_multiarray_to_rows_cols
 
@@ -127,6 +129,9 @@ class ElevationMappingNode(Node):
         )
         self.get_logger().info(f"Initialized map with length: {self._map.map_length}, resolution: {self._map.resolution}, cells: {self._map.cell_n}")
 
+        # Pre-allocated per-layer CPU buffers to avoid allocation on every publish tick
+        self._publish_buffers: list[np.ndarray] = []
+
         self._map_q = None
         self._map_t = None
 
@@ -177,6 +182,20 @@ class ElevationMappingNode(Node):
                     self.my_publishers[pub_key] = {}
                 self.my_publishers[pub_key][pub_param] = param_value.value
 
+        # ── Optional pointcloud pre-filters ───────────────────────────────────
+        self.voxel_leaf_size: float = 0.0  # 0 = disabled
+        if self.has_parameter('voxel_leaf_size'):
+            self.voxel_leaf_size = self.get_parameter('voxel_leaf_size').get_parameter_value().double_value
+
+        self.azimuth_filter_enabled: bool = False
+        self.azimuth_min: float = -math.pi
+        self.azimuth_max: float = math.pi
+        if self.has_parameter('azimuth_filter_enabled'):
+            self.azimuth_filter_enabled = self.get_parameter('azimuth_filter_enabled').get_parameter_value().bool_value
+        if self.has_parameter('azimuth_min'):
+            self.azimuth_min = self.get_parameter('azimuth_min').get_parameter_value().double_value
+        if self.has_parameter('azimuth_max'):
+            self.azimuth_max = self.get_parameter('azimuth_max').get_parameter_value().double_value
 
     def set_param_values_from_ros(self):
         # Assign to self.param so it won't use defaults. This is research code: crash loudly if
@@ -228,6 +247,9 @@ class ElevationMappingNode(Node):
         ).get_parameter_value().double_value
         self.param.min_valid_distance = self.get_parameter(
             'min_valid_distance'
+        ).get_parameter_value().double_value
+        self.param.max_valid_distance = self.get_parameter(
+            'max_valid_distance'
         ).get_parameter_value().double_value
         self.param.max_height_range = self.get_parameter(
             'max_height_range'
@@ -394,7 +416,7 @@ class ElevationMappingNode(Node):
 
     def register_timers(self) -> None:
         self.time_pose_update = self.create_timer(
-            0.1,
+            1.0 / self.update_pose_fps,
             self.pose_update
         )
         self.timer_variance = self.create_timer(
@@ -919,6 +941,23 @@ class ElevationMappingNode(Node):
         if pts.size == 0:
             return
 
+        # Upload to GPU once here so the filters and input_pointcloud all
+        # operate on the same device buffer — avoids a second CPU→GPU copy
+        # inside ElevationMap.input_pointcloud (which calls cp.asarray anyway).
+        pts = cp.asarray(pts, dtype=cp.float32)
+
+        # Azimuth filter (bearing angle in the sensor frame, before TF transform)
+        if self.azimuth_filter_enabled:
+            pts = azimuth_filter_gpu(pts, self.azimuth_min, self.azimuth_max)
+            if pts.shape[0] == 0:
+                return
+
+        # Voxel downsampling
+        if self.voxel_leaf_size > 0.0:
+            pts = voxel_downsample_gpu(pts, self.voxel_leaf_size)
+            if pts.shape[0] == 0:
+                return
+
         frame_sensor_id = msg.header.frame_id
         if not frame_sensor_id:
             raise ValueError("PointCloud2 header.frame_id is empty.")
@@ -944,15 +983,17 @@ class ElevationMappingNode(Node):
         self._pointcloud_process_counter += 1
 
     def pose_update(self) -> None:
-        if self._last_t is None:
-            return
+        """Shift the map to follow base_link continuously, even between lidar scans.
+
+        Queries the **latest** TF (time=0) so the map tracks the robot at the
+        timer rate rather than lagging behind at the last pointcloud timestamp.
+        """
         transform = self.safe_lookup_transform(
             self.map_frame,
             self.base_frame,
-            self._last_t
+            rclpy.time.Time(),  # latest available TF
         )
         if transform is None:
-            # Transform not available, skip pose update
             return
         t = transform.transform.translation
         q = transform.transform.rotation
@@ -974,7 +1015,7 @@ class ElevationMappingNode(Node):
 def main(args=None) -> None:
     rclpy.init(args=args)
     node = ElevationMappingNode()
-    executor = rclpy.executors.SingleThreadedExecutor()
+    executor = rclpy.executors.MultiThreadedExecutor(num_threads=4)
     executor.add_node(node)
     try:
         executor.spin()

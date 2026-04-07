@@ -13,6 +13,7 @@ def _is_valid_probe_kernel():
             height=200,
             sensor_noise_factor=0.03,
             min_valid_distance=0.1,
+            max_valid_distance=100.0,
             max_height_range=10.5,
             ramped_height_range_a=0.3,
             ramped_height_range_b=1.0,

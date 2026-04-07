@@ -382,6 +382,7 @@ def map_utils(
     height,
     sensor_noise_factor,
     min_valid_distance,
+    max_valid_distance,
     max_height_range,
     ramped_height_range_a,
     ramped_height_range_b,
@@ -442,6 +443,9 @@ def map_utils(
             if (d < ${min_valid_distance} * ${min_valid_distance}) {
                 return false;
             }
+            else if (d > ${max_valid_distance} * ${max_valid_distance}) {
+                return false;
+            }
             else if (z - sz > dxy * ${ramped_height_range_a} + ${ramped_height_range_c} || z - sz > ${max_height_range}) {
                 return false;
             }
@@ -484,6 +488,7 @@ def map_utils(
         height=height,
         sensor_noise_factor=sensor_noise_factor,
         min_valid_distance=min_valid_distance,
+        max_valid_distance=max_valid_distance,
         max_height_range=max_height_range,
         ramped_height_range_a=ramped_height_range_a,
         ramped_height_range_b=ramped_height_range_b,
@@ -503,6 +508,7 @@ def add_points_kernel(
     max_ray_length,
     cleanup_step,
     min_valid_distance,
+    max_valid_distance,
     max_height_range,
     cleanup_cos_thresh,
     ramped_height_range_a,
@@ -520,6 +526,7 @@ def add_points_kernel(
             height,
             sensor_noise_factor,
             min_valid_distance,
+            max_valid_distance,
             max_height_range,
             ramped_height_range_a,
             ramped_height_range_b,
@@ -656,6 +663,7 @@ def error_counting_kernel(
     outlier_variance,
     traversability_inlier,
     min_valid_distance,
+    max_valid_distance,
     max_height_range,
     ramped_height_range_a,
     ramped_height_range_b,
@@ -670,6 +678,7 @@ def error_counting_kernel(
             height,
             sensor_noise_factor,
             min_valid_distance,
+            max_valid_distance,
             max_height_range,
             ramped_height_range_a,
             ramped_height_range_b,

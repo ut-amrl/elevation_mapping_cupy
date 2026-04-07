@@ -1,0 +1,74 @@
+# Elevation mapping config for Alphatruck with SuperOdometry + Livox Mid360
+#
+# SuperOdometry broadcasts the TF tree including the sensor frame
+# (livox_frame/base_link → base_link → odom → map), so the angled lidar
+# (-14.3 deg pitch) is handled automatically via TF — no correcting static
+# TF needed here unlike the FastDEM setup.
+#
+# Launch with:
+#   ros2 launch elevation_mapping_cupy alphatruck.launch.py
+
+/elevation_mapping_node:
+  ros__parameters:
+    # ── Frames ──────────────────────────────────────────────────────────────
+    map_frame: 'map'
+    base_frame: 'base_link'
+    corrected_map_frame: 'map'
+
+    # ── Map geometry ─────────────────────────────────────────────────────────
+    resolution: 0.2          # [m/cell]
+    map_length: 7.5         # [m] square map side length
+
+    # ── Point filtering ───────────────────────────────────────────────────────
+    # Minimum range: matches FastDEM range_min
+    min_valid_distance: 0.05
+    max_valid_distance: 10.0
+    
+
+    # Ramped height filter: rejects points above
+    #   max(d - ramped_height_range_b, 0) * ramped_height_range_a + ramped_height_range_c
+    # At close range (d < 1 m): max z = 0.3 m above sensor
+    # At 10 m range: max z = (10-1)*0.25 + 0.3 = 2.55 m above sensor
+    # Equivalent to FastDEM z_max ~2.0 m but distance-aware
+    ramped_height_range_a: 0.25
+    ramped_height_range_b: 1.0
+    ramped_height_range_c: 0.3
+    max_height_range: 1.0    # hard ceiling above sensor [m]
+
+    # ── GPU pointcloud pre-filters ────────────────────────────────────────────
+    # Applied in the sensor frame before the TF transform.
+
+    # Voxel downsampling — set to 0.0 to disable.
+    # 0.1 m leaf matches the map resolution; halves the Livox Mid360 point count.
+    voxel_leaf_size: 0.0         # [m]  (0.0 = disabled)
+
+    # Azimuth (bearing) filter — keep the forward ±90 deg sector.
+    # Set azimuth_filter_enabled: false to keep the full 360 deg scan.
+    # Wrap-around: if az_min > az_max the complement (rear wedge) is kept.
+    azimuth_filter_enabled: false 
+    azimuth_min: -1.5708          # -π/2 = -90 deg
+    azimuth_max:  1.5708          #  π/2 = +90 deg
+
+    # ── FPS tuning (Jetson Orin) ──────────────────────────────────────────────
+    update_variance_fps: 20.0
+    update_pose_fps: 20.0
+    map_acquire_fps: 20.0
+
+    # ── Subscriber ────────────────────────────────────────────────────────────
+    # Raw Livox Mid360 pointcloud. The frame_id embedded in each message
+    # (livox_frame/base_link) is used automatically for the TF lookup.
+    subscribers:
+      lidar:
+        topic_name: '/livox/lidar'
+        data_type: pointcloud
+
+    # ── Publishers ────────────────────────────────────────────────────────────
+    publishers:
+      elevation_map_raw:
+        layers: ['elevation', 'variance']
+        basic_layers: ['elevation']
+        fps: 20.0
+      # elevation_map_filter:
+      #   layers: [ 'cv_smooth']
+      #   basic_layers: [ 'cv_smooth']
+      #   fps: 50.0
